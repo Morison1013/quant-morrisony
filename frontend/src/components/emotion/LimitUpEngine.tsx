@@ -30,7 +30,7 @@ function formatAmount(amount: number): string {
   return `${amount}`;
 }
 
-export default function LimitUpEngine() {
+export default function LimitUpEngine({ className = "" }: { className?: string }) {
   const { snapshot } = useEmotion();
   const [filterBoard, setFilterBoard] = useState<"all" | "first" | "multi">("all");
   const [filterTag, setFilterTag] = useState<BoardTag | "all">("all");
@@ -81,7 +81,7 @@ export default function LimitUpEngine() {
   }
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700/50 overflow-hidden">
+    <div className={`bg-slate-900 rounded-xl border border-slate-700/50 overflow-hidden flex flex-col ${className}`}>
       {/* 标题 + 筛选栏 */}
       <div className="px-4 py-3 border-b border-slate-700/50">
         <div className="flex items-center justify-between mb-2">
@@ -149,8 +149,8 @@ export default function LimitUpEngine() {
         </div>
       </div>
 
-      {/* 表格 */}
-      <div className="overflow-x-auto">
+      {/* 表格（最多显示5行，超出滚动） */}
+      <div className="overflow-x-auto overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800" style={{ maxHeight: "220px" }}>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-slate-700/50 text-slate-400 uppercase tracking-wider bg-slate-800/30">

@@ -13,13 +13,13 @@ function formatAmount(amount: number): string {
   return `${amount}`;
 }
 
-export default function BrokenReview() {
+export default function BrokenReview({ className = "" }: { className?: string }) {
   const { snapshot } = useEmotion();
   const review = snapshot?.brokenReview || [];
 
   if (!snapshot) {
     return (
-      <div className="bg-slate-900 rounded-xl border border-slate-700/50 p-4 text-center text-slate-500">
+      <div className={`bg-slate-900 rounded-xl border border-slate-700/50 p-4 text-center text-slate-500 ${className}`}>
         加载中...
       </div>
     );
@@ -27,7 +27,7 @@ export default function BrokenReview() {
 
   if (review.length === 0) {
     return (
-      <div className="bg-slate-900 rounded-xl border border-slate-700/50 p-4">
+      <div className={`bg-slate-900 rounded-xl border border-slate-700/50 p-4 ${className}`}>
         <h2 className="text-sm font-bold text-slate-100 mb-3">💔 炸板复盘</h2>
         <div className="text-center text-slate-500 text-xs py-4">今日无炸板个股</div>
       </div>
@@ -35,7 +35,7 @@ export default function BrokenReview() {
   }
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700/50 overflow-hidden">
+    <div className={`bg-slate-900 rounded-xl border border-slate-700/50 overflow-hidden flex flex-col ${className}`}>
       <div className="px-4 py-3 border-b border-slate-700/50">
         <h2 className="text-sm font-bold text-slate-100">
           💔 炸板复盘
@@ -44,7 +44,7 @@ export default function BrokenReview() {
         <p className="text-[10px] text-slate-500 mt-0.5">昨日涨停但今天回落的股票（按回撤幅度排序）</p>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800" style={{ maxHeight: "220px" }}>
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-slate-700/50 text-slate-400 bg-slate-800/30">

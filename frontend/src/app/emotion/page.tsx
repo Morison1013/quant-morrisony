@@ -11,8 +11,6 @@ import {
   EmotionDashboard,
   LimitUpEngine,
   ConsecutiveLadder,
-  BoardBreakMonitor,
-  SectorHeat,
   BrokenReview,
   EmotionCalendar,
   LeaderCompare,
@@ -46,36 +44,19 @@ function EmotionMonitorInner() {
         {/* ── 顶部情绪仪表盘 ── */}
         <EmotionDashboard />
 
-        {/* ── 中间三栏 ── */}
+        {/* ── 中间两栏 ── */}
         <div className="grid grid-cols-12 gap-3">
-          {/* 左侧：涨停强度引擎（6 列） */}
-          <div className="col-span-6">
+          {/* 左侧：情绪日历 + 涨停强度引擎 + 炸板复盘（6 列） */}
+          <div className="col-span-6 flex flex-col gap-3">
+            <EmotionCalendar />
             <LimitUpEngine />
-          </div>
-
-          {/* 中央：连板天梯 + 龙头对比（3 列） */}
-          <div className="col-span-3 space-y-3">
-            <ConsecutiveLadder />
-            <LeaderCompare />
-          </div>
-
-          {/* 右侧：板块热力 + 炸板监控（3 列） */}
-          <div className="col-span-3 space-y-3">
-            <SectorHeat />
-            <BoardBreakMonitor />
-          </div>
-        </div>
-
-        {/* ── 底部双栏 ── */}
-        <div className="grid grid-cols-12 gap-3">
-          {/* 炸板复盘（6 列） */}
-          <div className="col-span-6">
             <BrokenReview />
           </div>
 
-          {/* 情绪周期日历（6 列） */}
-          <div className="col-span-6">
-            <EmotionCalendar />
+          {/* 右侧：龙头对比 + 连板天梯（6 列） */}
+          <div className="col-span-6 flex flex-col gap-3">
+            <LeaderCompare />
+            <ConsecutiveLadder className="flex-1" />
           </div>
         </div>
       </main>

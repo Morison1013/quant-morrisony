@@ -40,7 +40,7 @@ function HighestBoardCard({ board }: { board: ConsecutiveBoard }) {
   );
 }
 
-/* ── 梯队链条 ── */
+/* ── 梯队链条（支持滚动） ── */
 function BoardLevelRow({ level, boards }: { level: number; boards: ConsecutiveBoard[] }) {
   const indentMap: Record<number, string> = {
     5: "ml-0",
@@ -49,6 +49,11 @@ function BoardLevelRow({ level, boards }: { level: number; boards: ConsecutiveBo
     2: "ml-24",
     1: "ml-32",
   };
+
+  // 1板和2板最多显示5个，可滚动；其他级别全部显示
+  const maxVisible = (level === 1 || level === 2) ? 5 : boards.length;
+  const needsScroll = boards.length > maxVisible;
+  const visibleBoards = needsScroll ? boards.slice(0, maxVisible) : boards;
 
   return (
     <div className={`${indentMap[level] || "ml-32"} mb-2`}>
@@ -59,8 +64,8 @@ function BoardLevelRow({ level, boards }: { level: number; boards: ConsecutiveBo
         <div className="flex-1 h-px bg-slate-700/50" />
         <span className="text-[10px] text-slate-600">{boards.length} 只</span>
       </div>
-      <div className="flex flex-wrap gap-2">
-        {boards.map((b) => {
+      <div className={`flex flex-wrap gap-2 ${needsScroll ? "max-h-[180px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800" : ""}`}>
+        {visibleBoards.map((b) => {
           const isBroken = b.status !== "封死";
           return (
             <div
@@ -94,12 +99,17 @@ function BoardLevelRow({ level, boards }: { level: number; boards: ConsecutiveBo
             </div>
           );
         })}
+        {needsScroll && boards.length > maxVisible && (
+          <div className="text-[10px] text-slate-500 italic self-center">
+            ↓ 还有 {boards.length - maxVisible} 只...
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-export default function ConsecutiveLadder() {
+export default function ConsecutiveLadder({ className = "" }: { className?: string }) {
   const { snapshot } = useEmotion();
 
   const boards = snapshot?.consecutiveBoards || [];
@@ -115,14 +125,14 @@ export default function ConsecutiveLadder() {
 
   if (!snapshot) {
     return (
-      <div className="bg-slate-900 rounded-xl border border-slate-700/50 p-4 text-center text-slate-500">
+      <div className={`bg-slate-900 rounded-xl border border-slate-700/50 p-4 text-center text-slate-500 ${className}`}>
         加载中...
       </div>
     );
   }
 
   return (
-    <div className="bg-slate-900 rounded-xl border border-slate-700/50 p-4">
+    <div className={`bg-slate-900 rounded-xl border border-slate-700/50 p-4 flex flex-col ${className}`}>
       <h2 className="text-sm font-bold text-slate-100 mb-3">
         🏔️ 连板天梯
         <span className="ml-2 text-xs text-slate-500 font-normal">
@@ -133,8 +143,8 @@ export default function ConsecutiveLadder() {
       {/* 最高标 */}
       {highest && <HighestBoardCard board={highest} />}
 
-      {/* 梯队 */}
-      <div className="mt-4 space-y-1">
+      {/* 梯队（可滚动） */}
+      <div className="mt-4 space-y-1 flex-1 min-h-0 overflow-y-auto scrollbar-thin scrollbar-thumb-slate-600 scrollbar-track-slate-800">
         {levels.map(({ level, boards: levelBoards }) => (
           <BoardLevelRow key={level} level={level} boards={levelBoards} />
         ))}

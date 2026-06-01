@@ -36,28 +36,6 @@ function YesterdayLimitUpCard({ metrics }: { metrics: SentimentMetrics }) {
   );
 }
 
-/* ── 炸板率卡片 ── */
-function BrokenRateCard({ metrics }: { metrics: SentimentMetrics }) {
-  const val = metrics.brokenRate;
-  const color = val < 25 ? "bg-emerald-500/10 border-emerald-400/30" :
-                val > 40 ? "bg-red-500/20 border-red-400/50 animate-pulse" :
-                "bg-yellow-500/10 border-yellow-500/30";
-  const textColor = val < 25 ? "text-emerald-400" :
-                    val > 40 ? "text-red-400" : "text-yellow-400";
-  const label = val < 25 ? "封板意愿强" :
-                val > 40 ? "市场分歧巨大，风险高" : "正常范围";
-
-  return (
-    <div className={`rounded-xl border p-4 ${color} transition-all duration-500`}>
-      <div className="text-[10px] uppercase tracking-wider text-slate-400 mb-1">炸板率</div>
-      <div className={`text-2xl font-black font-mono transition-all duration-300 ${textColor}`}>
-        {val.toFixed(0)}%
-      </div>
-      <div className={`text-xs mt-1 font-medium ${textColor}`}>{label}</div>
-    </div>
-  );
-}
-
 /* ── 涨停/跌停家数卡片 ── */
 function UpDownCard({ metrics }: { metrics: SentimentMetrics }) {
   const { limitUpCount, limitDownCount } = metrics;
@@ -165,8 +143,8 @@ export default function EmotionDashboard() {
 
   if (loading || !snapshot) {
     return (
-      <div className="grid grid-cols-5 gap-3">
-        {[1, 2, 3, 4, 5].map((i) => (
+      <div className="grid grid-cols-4 gap-3">
+        {[1, 2, 3, 4].map((i) => (
           <div key={i} className="rounded-xl border border-slate-700/50 bg-slate-900 p-4 animate-pulse">
             <div className="h-3 bg-slate-700 rounded w-20 mb-2" />
             <div className="h-8 bg-slate-700 rounded w-16 mb-1" />
@@ -178,9 +156,8 @@ export default function EmotionDashboard() {
   }
 
   return (
-    <div className="grid grid-cols-5 gap-3">
+    <div className="grid grid-cols-4 gap-3">
       <YesterdayLimitUpCard metrics={snapshot.metrics} />
-      <BrokenRateCard metrics={snapshot.metrics} />
       <UpDownCard metrics={snapshot.metrics} />
       <PromotionRateCard metrics={snapshot.metrics} />
       <CompositeScoreCard score={snapshot.metrics.compositeScore} />
