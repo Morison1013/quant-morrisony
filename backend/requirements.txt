@@ -7,3 +7,6 @@ pandas>=2.0.0
 numpy>=1.24.0
 pytest>=8.0.0
 httpx>=0.27.0
+
+# RAG 知识库依赖
+chromadb>=0.4.0

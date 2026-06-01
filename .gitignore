@@ -47,3 +47,15 @@ cache/
 backend/.pytest_cache/
 backend/htmlcov/
 .coverage
+
+# Frontend
+node_modules/
+.next/
+out/
+frontend/.next/
+backend/.next/
+frontend/src/lib/.next/
+
+# ChromaDB (向量数据库会自动生成)
+backend/app/data/chroma/
+chroma/

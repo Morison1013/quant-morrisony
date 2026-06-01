@@ -71,6 +71,32 @@ def init_db():
         )
     """)
 
+    # 情绪快照历史（用于情绪周期日历）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS emotion_snapshots (
+            date TEXT PRIMARY KEY,
+            snapshot_json TEXT,
+            created_at TEXT
+        )
+    """)
+
+    # 5分钟K线（用于盘中分时分析）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS min5_kline (
+            code TEXT NOT NULL,
+            datetime TEXT NOT NULL,
+            open REAL,
+            high REAL,
+            low REAL,
+            close REAL,
+            volume REAL,
+            amount REAL,
+            PRIMARY KEY (code, datetime)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_min5_code ON min5_kline(code)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_min5_datetime ON min5_kline(datetime)")
+
     conn.commit()
     conn.close()
 
@@ -203,3 +229,97 @@ def get_db_stats() -> dict:
         "date_from": date_range[0] if date_range else None,
         "date_to": date_range[1] if date_range else None,
     }
+
+
+# ────────────────────────────────────────────
+# 情绪快照历史
+# ────────────────────────────────────────────
+
+def save_emotion_snapshot(date: str, snapshot: dict):
+    """保存当日情绪快照。"""
+    import json
+    conn = get_conn()
+    cursor = conn.cursor()
+    now = time.strftime("%Y-%m-%d %H:%M:%S")
+    cursor.execute(
+        "INSERT OR REPLACE INTO emotion_snapshots (date, snapshot_json, created_at) VALUES (?, ?, ?)",
+        (date, json.dumps(snapshot, ensure_ascii=False), now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_emotion_history(days: int = 30) -> list[dict]:
+    """加载最近 N 天的情绪快照历史。"""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        "SELECT date, snapshot_json FROM emotion_snapshots ORDER BY date DESC LIMIT ?",
+        conn,
+        params=(days,),
+    )
+    conn.close()
+    if df.empty:
+        return []
+    import json
+    records = []
+    for _, row in df.iterrows():
+        try:
+            snap = json.loads(row["snapshot_json"])
+            snap["date"] = row["date"]
+            records.append(snap)
+        except Exception:
+            pass
+    return records
+
+
+# ────────────────────────────────────────────
+# 5分钟K线
+# ────────────────────────────────────────────
+
+def save_min5_kline(code: str, df: pd.DataFrame):
+    """保存单只股票的5分钟K线数据。"""
+    if df.empty:
+        return
+    conn = get_conn()
+    rows = []
+    for _, row in df.iterrows():
+        dt = str(row.get("datetime", row.get("date", "")))
+        rows.append((
+            code,
+            dt,
+            float(row.get("open", 0)),
+            float(row.get("high", 0)),
+            float(row.get("low", 0)),
+            float(row.get("close", 0)),
+            float(row.get("volume", 0)),
+            float(row.get("amount", 0)),
+        ))
+    conn.executemany(
+        "INSERT OR REPLACE INTO min5_kline (code, datetime, open, high, low, close, volume, amount) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_min5_kline(code: str, limit: int = 500) -> Optional[pd.DataFrame]:
+    """从数据库加载单只股票的5分钟K线数据。"""
+    conn = get_conn()
+    df = pd.read_sql_query(
+        """
+        SELECT code, datetime, open, high, low, close, volume, amount
+        FROM min5_kline
+        WHERE code = ?
+        ORDER BY datetime DESC
+        LIMIT ?
+        """,
+        conn,
+        params=(code, limit),
+    )
+    conn.close()
+    if df.empty:
+        return None
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    df = df.sort_values("datetime").reset_index(drop=True)
+    return df

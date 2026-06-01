@@ -51,7 +51,7 @@ export default function StockDetailPage() {
             ← 返回扫描
           </Link>
           <Link
-            href="/"
+            href="/stock-query"
             className="px-3 py-1.5 text-sm rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:text-white hover:border-slate-600 transition-colors"
           >
             股票查询

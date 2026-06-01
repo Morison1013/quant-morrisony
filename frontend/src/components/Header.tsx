@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const NAV_ITEMS = [
-  { href: "/", label: "股票查询" },
+  { href: "/emotion", label: "情绪监控" },
+  { href: "/stock-query", label: "股票查询" },
   { href: "/scanner", label: "全市场扫描" },
   { href: "/dashboard", label: "数据看板" },
 ];
