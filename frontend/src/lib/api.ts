@@ -128,6 +128,63 @@ export async function fetchScan(strategies: string[]): Promise<ScanResponse> {
   return data;
 }
 
+// SSE 扫描回调类型
+export interface ScanProgress {
+  type: "progress";
+  current: number;
+  total: number;
+  percent: number;
+  matched: number;
+}
+
+export interface ScanMatch {
+  type: "match";
+  result: ScanResultItem;
+}
+
+export interface ScanDone {
+  type: "done";
+  total: number;
+  matched: number;
+  skipped: number;
+  elapsed_ms: number;
+  results: ScanResultItem[];
+}
+
+export type ScanEvent = ScanProgress | ScanMatch | ScanDone;
+
+export function fetchScanStream(
+  strategies: string[],
+  onProgress: (event: ScanEvent) => void
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const params = new URLSearchParams();
+    strategies.forEach((s) => params.set(s, "true"));
+
+    const url = `${API_BASE}/scanner/scan-stream?${params.toString()}`;
+    const eventSource = new EventSource(url);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data: ScanEvent = JSON.parse(event.data);
+        onProgress(data);
+
+        if (data.type === "done") {
+          eventSource.close();
+          resolve();
+        }
+      } catch (e) {
+        console.error("Parse SSE error:", e);
+      }
+    };
+
+    eventSource.onerror = (error) => {
+      eventSource.close();
+      reject(new Error("SSE connection error"));
+    };
+  });
+}
+
 export async function fetchDbStats(): Promise<{
   stock_count: number;
   kline_count: number;
@@ -136,6 +193,24 @@ export async function fetchDbStats(): Promise<{
   last_refresh: string | null;
 }> {
   const { data } = await api.get("/scanner/db-stats");
+  return data;
+}
+
+// ────────────────────────────────────────────
+// Stock Search API
+// ────────────────────────────────────────────
+
+export interface StockSearchItem {
+  code: string;
+  name: string;
+  market: number;
+}
+
+export async function searchStocks(keyword: string, limit: number = 20): Promise<StockSearchItem[]> {
+  if (!keyword.trim()) return [];
+  const { data } = await api.get<StockSearchItem[]>("/stock/search", {
+    params: { keyword, limit },
+  });
   return data;
 }
 

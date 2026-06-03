@@ -3,14 +3,46 @@
 import React, { useState, useCallback, useEffect } from "react";
 import Link from "next/link";
 import Header from "@/components/Header";
-import { fetchScan, fetchDbStats, type ScanResultItem } from "@/lib/api";
+import {
+  fetchDbStats,
+  fetchScanStream,
+  type ScanResultItem,
+  type ScanEvent,
+} from "@/lib/api";
 
 const STRATEGIES = [
-  { key: "ma_bullish", label: "均线多头排列", desc: "60/55/30/20/10/5 全向上" },
-  { key: "macd_golden", label: "月MACD金叉", desc: "月金叉 + 周/日未死叉" },
-  { key: "arbitrage", label: "隔日套利信号", desc: "量缩价稳，3日递减" },
-  { key: "rubbing", label: "揉搓线洗盘", desc: "近3日多空拉锯 + 缩量" },
+  // 基础策略
+  { key: "ma_bullish", label: "均线多头排列", desc: "60/55/30/20/10/5 全向上", group: "基础" },
+  { key: "macd_golden", label: "月MACD金叉", desc: "月金叉 + 周/日未死叉", group: "基础" },
+  { key: "arbitrage", label: "隔日套利信号", desc: "量缩价稳，3日递减", group: "基础" },
+  { key: "rubbing", label: "揉搓线洗盘", desc: "近3日多空拉锯 + 缩量", group: "基础" },
+  // 双K线影线策略（下跌趋势）
+  { key: "continue_down", label: "中继下跌", desc: "下跌趋势+下影接上影+阴线", group: "影线-下跌" },
+  { key: "support_range", label: "支撑位震荡选方向", desc: "下跌趋势+下影接上影+阳线", group: "影线-下跌" },
+  { key: "support_rebound", label: "支撑位资金抢反弹", desc: "下跌趋势+上影接下影+阳线", group: "影线-下跌" },
+  { key: "short_stop", label: "短期止跌", desc: "下跌趋势+上影接下影+阴线", group: "影线-下跌" },
+  // 双K线影线策略（上涨趋势）
+  { key: "diverge_start", label: "开始有分歧", desc: "上涨趋势+下影接上影+阴线", group: "影线-上涨" },
+  { key: "diverge_strong", label: "分歧但强势看新高", desc: "上涨趋势+下影接上影+阳线", group: "影线-上涨" },
+  { key: "strong_support", label: "承接力度大只承接不追高", desc: "上涨趋势+上影接下影+阳线", group: "影线-上涨" },
+  { key: "weak_support", label: "承接低可能出现短期顶", desc: "上涨趋势+上影接下影+阴线", group: "影线-上涨" },
+  // 通达信策略
+  { key: "tdx_strategy1", label: "通达信策略1", desc: "复合信号(游资进场/抄底/精准买/黑马等)", group: "通达信" },
+  { key: "tdx_strategy2", label: "通达信策略2", desc: "主图量化策略(ZIG买线卖线/K线颜色填充)", group: "通达信" },
 ];
+
+// 按组分类策略
+const STRATEGY_GROUPS = STRATEGIES.reduce((acc, s) => {
+  const group = s.group || "其他";
+  if (!acc[group]) acc[group] = [];
+  acc[group].push(s);
+  return acc;
+}, {} as Record<string, typeof STRATEGIES>);
+
+// sessionStorage 缓存键
+const CACHE_KEY_RESULTS = "scanner_results";
+const CACHE_KEY_SELECTED = "scanner_selected";
+const CACHE_KEY_ELAPSED = "scanner_elapsed";
 
 const scoreColor = (score: number) => {
   if (score >= 80) return "text-emerald-400";
@@ -20,13 +52,41 @@ const scoreColor = (score: number) => {
 };
 
 export default function ScannerPage() {
+  // 初始状态使用默认值，避免 SSR hydration 错误
   const [selected, setSelected] = useState<Record<string, boolean>>({});
   const [results, setResults] = useState<ScanResultItem[]>([]);
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+  const [simulatedProgress, setSimulatedProgress] = useState(0);
   const [elapsed, setElapsed] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dbStats, setDbStats] = useState<{ stock_count: number; kline_count: number; last_refresh: string | null } | null>(null);
+
+  // 客户端加载后从 sessionStorage 恢复状态
+  useEffect(() => {
+    try {
+      const cachedSelected = sessionStorage.getItem(CACHE_KEY_SELECTED);
+      if (cachedSelected) setSelected(JSON.parse(cachedSelected));
+
+      const cachedResults = sessionStorage.getItem(CACHE_KEY_RESULTS);
+      if (cachedResults) setResults(JSON.parse(cachedResults));
+
+      const cachedElapsed = sessionStorage.getItem(CACHE_KEY_ELAPSED);
+      if (cachedElapsed) setElapsed(JSON.parse(cachedElapsed));
+    } catch {}
+  }, []); // 只在首次挂载时执行
+
+  // 保存状态到 sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem(CACHE_KEY_SELECTED, JSON.stringify(selected));
+  }, [selected]);
+
+  useEffect(() => {
+    if (results.length > 0) {
+      sessionStorage.setItem(CACHE_KEY_RESULTS, JSON.stringify(results));
+      sessionStorage.setItem(CACHE_KEY_ELAPSED, JSON.stringify(elapsed));
+    }
+  }, [results, elapsed]);
 
   // Load DB stats
   useEffect(() => {
@@ -36,6 +96,14 @@ export default function ScannerPage() {
   const toggle = (key: string) => {
     setSelected((prev) => ({ ...prev, [key]: !prev[key] }));
   };
+
+  // 清除缓存结果
+  const handleClear = useCallback(() => {
+    setResults([]);
+    setElapsed(null);
+    sessionStorage.removeItem(CACHE_KEY_RESULTS);
+    sessionStorage.removeItem(CACHE_KEY_ELAPSED);
+  }, []);
 
   const handleScan = useCallback(async () => {
     const active = Object.entries(selected)
@@ -52,20 +120,27 @@ export default function ScannerPage() {
     setResults([]);
     setProgress(null);
     setElapsed(null);
-
-    const startTime = Date.now();
+    setSimulatedProgress(0);
 
     try {
-      // Polling: since the API is synchronous, we show a loading state
-      // In a real app, you'd use SSE or WebSockets for progress updates
-      setProgress({ current: 0, total: 1 }); // show "starting..."
-
-      const scanResults = await fetchScan(active);
-      setResults(scanResults.results);
-      setElapsed(scanResults.elapsed_ms);
-      setProgress({ current: scanResults.total, total: scanResults.total });
+      // 使用 SSE 实时进度
+      await fetchScanStream(active, (event: ScanEvent) => {
+        if (event.type === "progress") {
+          setProgress({ current: event.current, total: event.total });
+          setSimulatedProgress(event.percent);
+        } else if (event.type === "match") {
+          // 实时添加匹配结果
+          setResults((prev) => [...prev, event.result]);
+        } else if (event.type === "done") {
+          // 最终结果（按打分排序）
+          const sorted = event.results.sort((a, b) => b.strategy_score - a.strategy_score);
+          setResults(sorted);
+          setElapsed(event.elapsed_ms);
+          setSimulatedProgress(100);
+        }
+      });
     } catch (e: any) {
-      setError(e?.response?.data?.detail ?? e?.message ?? "扫描失败");
+      setError(e?.message ?? "扫描失败");
     } finally {
       setScanning(false);
     }
@@ -108,29 +183,35 @@ export default function ScannerPage() {
             勾选策略，系统自动扫描全部 A 股（本地数据库加速）。
           </p>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-            {STRATEGIES.map((s) => (
-              <label
-                key={s.key}
-                className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-                  selected[s.key]
-                    ? "bg-blue-600/10 border-blue-500/50"
-                    : "bg-slate-800/50 border-slate-700/50 hover:border-slate-600"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={selected[s.key] || false}
-                  onChange={() => toggle(s.key)}
-                  className="mt-0.5 h-4 w-4 rounded border-slate-600 bg-slate-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
-                />
-                <div>
-                  <div className="text-sm font-medium text-slate-200">{s.label}</div>
-                  <div className="text-xs text-slate-500">{s.desc}</div>
-                </div>
-              </label>
-            ))}
-          </div>
+          {/* 分组策略选择 */}
+          {Object.entries(STRATEGY_GROUPS).map(([groupName, groupStrategies]) => (
+            <div key={groupName} className="mb-4">
+              <div className="text-xs text-slate-400 font-medium mb-2 px-1">{groupName}</div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                {groupStrategies.map((s) => (
+                  <label
+                    key={s.key}
+                    className={`flex items-start gap-2 p-2 rounded-lg border cursor-pointer transition-colors ${
+                      selected[s.key]
+                        ? "bg-blue-600/10 border-blue-500/50"
+                        : "bg-slate-800/50 border-slate-700/50 hover:border-slate-600"
+                    }`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selected[s.key] || false}
+                      onChange={() => toggle(s.key)}
+                      className="mt-0.5 h-3.5 w-3.5 rounded border-slate-600 bg-slate-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium text-slate-200 truncate">{s.label}</div>
+                      <div className="text-xs text-slate-500 truncate">{s.desc}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
 
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-500">
@@ -155,15 +236,22 @@ export default function ScannerPage() {
               <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
                 <span>正在扫描全市场...</span>
                 <span>
-                  {progress ? `${progress.current.toLocaleString()} / ${progress.total.toLocaleString()}` : "准备中..."}
+                  {progress
+                    ? `${progress.current.toLocaleString()} / ${progress.total.toLocaleString()} (${simulatedProgress}%)`
+                    : "连接中..."}
                 </span>
               </div>
               <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
                 <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-300 animate-pulse"
-                  style={{ width: progress ? `${(progress.current / progress.total) * 100}%` : "5%" }}
+                  className="h-full bg-blue-600 rounded-full transition-all duration-150"
+                  style={{ width: `${simulatedProgress}%` }}
                 />
               </div>
+              {results.length > 0 && (
+                <div className="mt-1 text-xs text-emerald-400">
+                  已匹配 {results.length} 只股票
+                </div>
+              )}
             </div>
           )}
 
@@ -190,6 +278,12 @@ export default function ScannerPage() {
                   {results.length} 只
                 </span>
               </h3>
+              <button
+                onClick={handleClear}
+                className="text-xs text-slate-400 hover:text-red-400 transition-colors"
+              >
+                清除结果
+              </button>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

@@ -20,6 +20,18 @@ from app.services.strategy import (
     compute_monthly_macd,
     compute_weekly_macd,
     run_strategy_pipeline,
+    # 8个双K线影线策略
+    check_continue_down,
+    check_support_range,
+    check_support_rebound,
+    check_short_stop,
+    check_diverge_start,
+    check_diverge_strong,
+    check_strong_support,
+    check_weak_support,
+    # 通达信策略1（合并版）和策略2
+    check_tdx_strategy1,
+    check_tdx_strategy2,
 )
 
 # ────────────────────────────────────────────
@@ -211,6 +223,124 @@ class RubbingAgent(StrategyAgent):
 
 
 # ────────────────────────────────────────────
+# 8个双K线影线策略 Agent
+# ────────────────────────────────────────────
+
+class ContinueDownAgent(StrategyAgent):
+    """中继下跌 Agent。"""
+
+    def __init__(self):
+        super().__init__("continue_down", "中继下跌")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_continue_down(df)
+        return result["signal"]
+
+
+class SupportRangeAgent(StrategyAgent):
+    """支撑位震荡选方向 Agent。"""
+
+    def __init__(self):
+        super().__init__("support_range", "支撑位震荡选方向")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_support_range(df)
+        return result["signal"]
+
+
+class SupportReboundAgent(StrategyAgent):
+    """支撑位资金抢反弹 Agent。"""
+
+    def __init__(self):
+        super().__init__("support_rebound", "支撑位资金抢反弹")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_support_rebound(df)
+        return result["signal"]
+
+
+class ShortStopAgent(StrategyAgent):
+    """短期止跌 Agent。"""
+
+    def __init__(self):
+        super().__init__("short_stop", "短期止跌")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_short_stop(df)
+        return result["signal"]
+
+
+class DivergeStartAgent(StrategyAgent):
+    """开始有分歧 Agent。"""
+
+    def __init__(self):
+        super().__init__("diverge_start", "开始有分歧")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_diverge_start(df)
+        return result["signal"]
+
+
+class DivergeStrongAgent(StrategyAgent):
+    """分歧但强势看新高 Agent。"""
+
+    def __init__(self):
+        super().__init__("diverge_strong", "分歧但强势看新高")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_diverge_strong(df)
+        return result["signal"]
+
+
+class StrongSupportAgent(StrategyAgent):
+    """承接力度大只承接不追高 Agent。"""
+
+    def __init__(self):
+        super().__init__("strong_support", "承接力度大只承接不追高")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_strong_support(df)
+        return result["signal"]
+
+
+class WeakSupportAgent(StrategyAgent):
+    """承接低可能出现短期顶 Agent。"""
+
+    def __init__(self):
+        super().__init__("weak_support", "承接低可能出现短期顶")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_weak_support(df)
+        return result["signal"]
+
+
+# ────────────────────────────────────────────
+# 通达信策略 Agent（合并版）
+# ────────────────────────────────────────────
+
+class TdxStrategy1Agent(StrategyAgent):
+    """通达信策略1 Agent（复合信号合并版）。"""
+
+    def __init__(self):
+        super().__init__("tdx_strategy1", "通达信策略1")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_tdx_strategy1(df)
+        return result["signal"]
+
+
+class TdxStrategy2Agent(StrategyAgent):
+    """通达信策略2 Agent（主图量化策略）。"""
+
+    def __init__(self):
+        super().__init__("tdx_strategy2", "通达信策略2")
+
+    def scan_stock(self, code: str, name: str, df) -> bool:
+        result = check_tdx_strategy2(df)
+        return result["signal"]
+
+
+# ────────────────────────────────────────────
 # Agent 注册表
 # ────────────────────────────────────────────
 
@@ -219,4 +349,16 @@ AGENT_REGISTRY: dict[str, StrategyAgent] = {
     "macd_golden": MacdGoldenAgent(),
     "arbitrage": ArbitrageAgent(),
     "rubbing": RubbingAgent(),
+    # 8个双K线影线策略
+    "continue_down": ContinueDownAgent(),
+    "support_range": SupportRangeAgent(),
+    "support_rebound": SupportReboundAgent(),
+    "short_stop": ShortStopAgent(),
+    "diverge_start": DivergeStartAgent(),
+    "diverge_strong": DivergeStrongAgent(),
+    "strong_support": StrongSupportAgent(),
+    "weak_support": WeakSupportAgent(),
+    # 通达信策略（合并版）
+    "tdx_strategy1": TdxStrategy1Agent(),
+    "tdx_strategy2": TdxStrategy2Agent(),
 }

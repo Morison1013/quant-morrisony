@@ -29,6 +29,18 @@ from app.services.strategy import (
     compute_monthly_macd,
     compute_weekly_macd,
     run_strategy_pipeline,
+    # 8个双K线影线策略
+    check_continue_down,
+    check_support_range,
+    check_support_rebound,
+    check_short_stop,
+    check_diverge_start,
+    check_diverge_strong,
+    check_strong_support,
+    check_weak_support,
+    # 通达信策略（合并版）
+    check_tdx_strategy1,
+    check_tdx_strategy2,
 )
 
 # 策略标志定义
@@ -37,6 +49,18 @@ STRATEGY_FLAGS = {
     "macd_golden": "月MACD金叉",
     "arbitrage": "隔日套利信号",
     "rubbing": "揉搓线洗盘",
+    # 8个双K线影线策略
+    "continue_down": "中继下跌",
+    "support_range": "支撑位震荡选方向",
+    "support_rebound": "支撑位资金抢反弹",
+    "short_stop": "短期止跌",
+    "diverge_start": "开始有分歧",
+    "diverge_strong": "分歧但强势看新高",
+    "strong_support": "承接力度大只承接不追高",
+    "weak_support": "承接低可能出现短期顶",
+    # 通达信策略（合并版）
+    "tdx_strategy1": "通达信策略1",
+    "tdx_strategy2": "通达信策略2",
 }
 
 # 扫描配置
@@ -210,6 +234,48 @@ def _check_stock_fast(code: str, name: str, strategies: list[str], cache: dict) 
         rub = check_rubbing_strategy(df)
         checks["rubbing"] = rub["buy_signal"]
 
+    # 8个双K线影线策略
+    if "continue_down" in strategies:
+        result = check_continue_down(df)
+        checks["continue_down"] = result["signal"]
+
+    if "support_range" in strategies:
+        result = check_support_range(df)
+        checks["support_range"] = result["signal"]
+
+    if "support_rebound" in strategies:
+        result = check_support_rebound(df)
+        checks["support_rebound"] = result["signal"]
+
+    if "short_stop" in strategies:
+        result = check_short_stop(df)
+        checks["short_stop"] = result["signal"]
+
+    if "diverge_start" in strategies:
+        result = check_diverge_start(df)
+        checks["diverge_start"] = result["signal"]
+
+    if "diverge_strong" in strategies:
+        result = check_diverge_strong(df)
+        checks["diverge_strong"] = result["signal"]
+
+    if "strong_support" in strategies:
+        result = check_strong_support(df)
+        checks["strong_support"] = result["signal"]
+
+    if "weak_support" in strategies:
+        result = check_weak_support(df)
+        checks["weak_support"] = result["signal"]
+
+    # 通达信策略（合并版）
+    if "tdx_strategy1" in strategies:
+        result = check_tdx_strategy1(df)
+        checks["tdx_strategy1"] = result["signal"]
+
+    if "tdx_strategy2" in strategies:
+        result = check_tdx_strategy2(df)
+        checks["tdx_strategy2"] = result["signal"]
+
     # 检查是否全部满足
     if checks and all(checks.values()):
         latest_close = round(float(df.iloc[-1]["close"]), 2)
@@ -224,6 +290,28 @@ def _check_stock_fast(code: str, name: str, strategies: list[str], cache: dict) 
             score += 20
         if checks.get("rubbing"):
             score += 25
+        # 8个双K线影线策略加分
+        if checks.get("continue_down"):
+            score += 15
+        if checks.get("support_range"):
+            score += 10
+        if checks.get("support_rebound"):
+            score += 20
+        if checks.get("short_stop"):
+            score += 20
+        if checks.get("diverge_start"):
+            score += 15
+        if checks.get("diverge_strong"):
+            score += 20
+        if checks.get("strong_support"):
+            score += 15
+        if checks.get("weak_support"):
+            score += 10
+        # 通达信策略加分
+        if checks.get("tdx_strategy1"):
+            score += 25
+        if checks.get("tdx_strategy2"):
+            score += 30
 
         return {
             "code": code,

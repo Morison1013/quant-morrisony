@@ -4,16 +4,74 @@
 每条路由对应一个独立的数据维度/策略指标，便于未来升级为多 Agent 协作 Tool。
 """
 
-from typing import Optional
+import re
+from typing import Optional, List
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, HTTPException
 
 from app.config import settings
-from app.schemas.stock import HistoryResponse, KLineItem, SummaryResponse
-from app.services.data_fetcher import fetch_history_daily
+from app.schemas.stock import HistoryResponse, KLineItem, SummaryResponse, StockSearchResult
+from app.services.data_fetcher import fetch_history_daily, get_all_stock_codes
 from app.services.strategy import generate_summary, run_strategy_pipeline
 
 router = APIRouter(prefix="/stock", tags=["stock"])
+
+
+def _validate_symbol(symbol: str) -> str:
+    """
+    验证并规范化股票代码。
+    必须为6位数字，去除 sh/sz 前缀。
+    """
+    code = str(symbol).lower().strip()
+    if code.startswith(("sh", "sz")):
+        code = code[2:]
+    if not re.match(r"^\d{6}$", code):
+        raise HTTPException(
+            status_code=400,
+            detail=f"无效的股票代码 '{symbol}'，必须是6位数字（如 600519）"
+        )
+    return code
+
+
+@router.get("/search", response_model=List[StockSearchResult])
+def search_stocks(
+    keyword: str = Query(default="", description="搜索关键词（代码或名称）"),
+    limit: int = Query(default=20, ge=1, le=100, description="返回数量限制"),
+):
+    """
+    搜索股票（支持代码和名称搜索）。
+
+    Returns:
+        匹配的股票列表，包含代码和名称。
+    """
+    if not keyword:
+        return []
+
+    keyword = keyword.strip().upper()
+
+    # 获取全部股票列表
+    all_stocks = get_all_stock_codes()
+
+    results = []
+    for stock in all_stocks:
+        code = stock.get("code", "")
+        name = stock.get("name", "")
+
+        # 匹配逻辑：代码前缀匹配或名称包含
+        code_match = code.startswith(keyword)
+        name_match = keyword.lower() in name.lower() if name else False
+
+        if code_match or name_match:
+            results.append(StockSearchResult(
+                code=code,
+                name=name,
+                market=stock.get("market", 1),
+            ))
+
+            if len(results) >= limit:
+                break
+
+    return results
 
 
 @router.get("/history", response_model=HistoryResponse)
@@ -25,8 +83,9 @@ def get_stock_history(
     获取带策略指标的历史日 K 线序列。
     包含：OHLCV + 6条均线 + MACD(DIF/DEA/HIST)。
     """
-    df = fetch_history_daily(symbol)
-    df.attrs["symbol"] = symbol
+    code = _validate_symbol(symbol)
+    df = fetch_history_daily(code)
+    df.attrs["symbol"] = code
     df = run_strategy_pipeline(df)
 
     # 取最近 N 条
@@ -67,8 +126,9 @@ def get_stock_summary(
     获取最新策略复盘摘要。
     包含：均线状态、MACD 多周期状态、成交量信号、综合打分。
     """
-    df = fetch_history_daily(symbol)
-    df.attrs["symbol"] = symbol
+    code = _validate_symbol(symbol)
+    df = fetch_history_daily(code)
+    df.attrs["symbol"] = code
     summary = generate_summary(df)
-    summary["symbol"] = symbol
+    summary["symbol"] = code
     return SummaryResponse(**summary)

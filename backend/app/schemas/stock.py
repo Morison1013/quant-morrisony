@@ -2,6 +2,13 @@ from pydantic import BaseModel
 from typing import Optional
 
 
+class StockSearchResult(BaseModel):
+    """股票搜索结果。"""
+    code: str
+    name: str
+    market: int = 1  # 0=深圳, 1=上海
+
+
 class KLineItem(BaseModel):
     """单根 K 线数据（带策略指标）。"""
     date: str

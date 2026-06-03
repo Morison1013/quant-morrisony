@@ -358,6 +358,1016 @@ def check_rubbing_strategy(df: pd.DataFrame) -> dict:
 
 
 # ────────────────────────────────────────────
+# 指标 5：双K线影线组合策略（拆分为8个独立策略）
+# ────────────────────────────────────────────
+
+def _compute_ma20_slope(ma20_series: pd.Series, window: int = 5) -> float:
+    """计算 MA20 的 N 日斜率。"""
+    if len(ma20_series) < window + 1:
+        return 0.0
+    recent = ma20_series.iloc[-(window + 1):]
+    if pd.isna(recent.iloc[0]) or pd.isna(recent.iloc[-1]):
+        return 0.0
+    slope = (recent.iloc[-1] - recent.iloc[0]) / window
+    return slope
+
+
+def determine_trend_with_slope(df: pd.DataFrame) -> str:
+    """判断趋势：上涨/下跌/震荡（放宽条件）。"""
+    if len(df) < 25:
+        return "sideways"
+    ma20 = df["close"].rolling(window=20, min_periods=20).mean()
+    if pd.isna(ma20.iloc[-1]):
+        return "sideways"
+    last_close = df.iloc[-1]["close"]
+    last_ma20 = ma20.iloc[-1]
+    slope = _compute_ma20_slope(ma20, window=5)
+
+    # 放宽条件：只看斜率方向，不强制要求价格在MA20上方/下方
+    # 允许价格偏离MA20不超过3%仍判断为趋势
+    deviation = abs(last_close - last_ma20) / last_ma20
+
+    if slope > 0:
+        # MA20向上，只要价格不偏离太远就判断为上涨
+        if last_close >= last_ma20 * 0.97:  # 允许偏离3%
+            return "up"
+    elif slope < 0:
+        # MA20向下，只要价格不偏离太远就判断为下跌
+        if last_close <= last_ma20 * 1.03:  # 允许偏离3%
+            return "down"
+
+    # 斜率接近0时，看价格位置判断
+    if abs(slope) < 0.01:
+        if last_close > last_ma20 * 1.02:
+            return "up"
+        elif last_close < last_ma20 * 0.98:
+            return "down"
+
+    return "sideways"
+
+
+def _calc_shadows(high: float, low: float, close: float, open_: float) -> dict:
+    """计算影线长度。"""
+    body = abs(close - open_)
+    upper_shadow = high - max(close, open_)
+    lower_shadow = min(close, open_) - low
+    return {"body": body, "upper_shadow": upper_shadow, "lower_shadow": lower_shadow}
+
+
+def _is_long_lower_shadow(shadows: dict, body_ratio: float = 0.1) -> bool:
+    """长下影线判断（使用相对比例）。
+
+    Args:
+        body_ratio: 小实体判断阈值（实体占振幅的比例，默认10%）
+
+    判断标准：
+    - 小实体（实体占比<10%）：下影明显长于上影（>1.5倍）
+    - 正常实体：下影 >= 实体×0.8 且 上影 <= 实体×1.0
+    """
+    body = shadows["body"]
+    lower = shadows["lower_shadow"]
+    upper = shadows["upper_shadow"]
+
+    # 使用相对比例判断小实体
+    total_range = body + lower + upper
+    if total_range > 0:
+        body_pct = body / total_range
+    else:
+        body_pct = 0
+
+    if body_pct < body_ratio or body < 0.5:
+        # 小实体/十字星：下影明显长于上影即可
+        return lower > upper * 1.5 and lower > 0
+
+    # 正常实体：放宽条件
+    return lower >= body * 0.8 and upper <= body * 1.0
+
+
+def _is_long_upper_shadow(shadows: dict, body_ratio: float = 0.1) -> bool:
+    """长上影线判断（使用相对比例）。
+
+    Args:
+        body_ratio: 小实体判断阈值（实体占振幅的比例，默认10%）
+
+    判断标准：
+    - 小实体（实体占比<10%）：上影明显长于下影（>1.5倍）
+    - 正常实体：上影 >= 实体×0.8 且 下影 <= 实体×1.0
+    """
+    body = shadows["body"]
+    lower = shadows["lower_shadow"]
+    upper = shadows["upper_shadow"]
+
+    # 使用相对比例判断小实体
+    total_range = body + lower + upper
+    if total_range > 0:
+        body_pct = body / total_range
+    else:
+        body_pct = 0
+
+    if body_pct < body_ratio or body < 0.5:
+        # 小实体/十字星：上影明显长于下影即可
+        return upper > lower * 1.5 and upper > 0
+
+    # 正常实体：放宽条件
+    return upper >= body * 0.8 and lower <= body * 1.0
+
+
+def _classify_volume(volume: float, avg_vol_5: float) -> str:
+    """量能分类：huge/increase/moderate/stable/decrease"""
+    if avg_vol_5 <= 0:
+        return "stable"
+    ratio = volume / avg_vol_5
+    if ratio > 1.5:
+        return "huge"
+    elif ratio > 1.3:
+        return "increase"
+    elif ratio >= 1.0:
+        return "moderate"
+    elif ratio >= 0.7:
+        return "stable"
+    else:
+        return "decrease"
+
+
+def check_dual_shadow_base(df: pd.DataFrame) -> dict:
+    """
+    检测双K线影线组合基础信息。
+
+    Returns:
+        {
+            "trend": "up"/"down"/"sideways",
+            "combo_type": "lower_to_upper"/"upper_to_lower"/None,
+            "k1_is_yin": bool,
+            "k1_vol_type": str,
+            "k2_vol_type": str,
+            "k1_shadows": dict,
+            "k2_shadows": dict,
+            "avg_vol_5": float,
+        }
+    """
+    if len(df) < 30:
+        return {"trend": "sideways", "combo_type": None}
+
+    # 计算MA20和趋势
+    df_temp = df.copy()
+    df_temp["ma20"] = df_temp["close"].rolling(window=20, min_periods=20).mean()
+    df_temp["avg_vol_5"] = df_temp["volume"].rolling(window=5, min_periods=5).mean().shift(1)
+
+    trend = determine_trend_with_slope(df_temp)
+    if trend == "sideways":
+        return {"trend": "sideways", "combo_type": None}
+
+    # K1和K2
+    k1 = df.iloc[-2]
+    k2 = df.iloc[-1]
+
+    # 计算影线
+    k1_shadows = _calc_shadows(k1["high"], k1["low"], k1["close"], k1["open"])
+    k2_shadows = _calc_shadows(k2["high"], k2["low"], k2["close"], k2["open"])
+
+    k1_has_lower = _is_long_lower_shadow(k1_shadows)
+    k1_has_upper = _is_long_upper_shadow(k1_shadows)
+    k2_has_lower = _is_long_lower_shadow(k2_shadows)
+    k2_has_upper = _is_long_upper_shadow(k2_shadows)
+
+    # 组合类型
+    combo_type = None
+    if k1_has_lower and k2_has_upper:
+        combo_type = "lower_to_upper"
+    elif k1_has_upper and k2_has_lower:
+        combo_type = "upper_to_lower"
+
+    if combo_type is None:
+        return {"trend": trend, "combo_type": None}
+
+    # K1颜色
+    k1_is_yin = k1["close"] < k1["open"]
+
+    # 量能
+    avg_vol_5 = df_temp.iloc[-2]["avg_vol_5"]
+    if pd.isna(avg_vol_5):
+        avg_vol_5 = df.iloc[-7:-2]["volume"].mean()
+
+    k1_vol_type = _classify_volume(k1["volume"], avg_vol_5)
+    k2_vol_type = _classify_volume(k2["volume"], avg_vol_5)
+
+    return {
+        "trend": trend,
+        "combo_type": combo_type,
+        "k1_is_yin": k1_is_yin,
+        "k1_vol_type": k1_vol_type,
+        "k2_vol_type": k2_vol_type,
+        "k1_shadows": k1_shadows,
+        "k2_shadows": k2_shadows,
+        "avg_vol_5": avg_vol_5,
+        "k1": k1,
+        "k2": k2,
+    }
+
+
+# ────────────────────────────────────────────
+# 8个独立策略定义
+# ────────────────────────────────────────────
+
+def check_continue_down(df: pd.DataFrame) -> dict:
+    """
+    中继下跌（下跌趋势）
+    条件：下影接上影 + K1阴线 + K1放量/平量 + K2缩量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "down" or base["combo_type"] != "lower_to_upper":
+        return {"signal": False, "name": "中继下跌"}
+
+    if not base["k1_is_yin"]:
+        return {"signal": False, "name": "中继下跌"}
+
+    k1_ok = base["k1_vol_type"] in ["increase", "stable", "moderate"]
+    k2_ok = base["k2_vol_type"] == "decrease"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "中继下跌",
+        "strength": -2,
+        "type": "bearish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_support_range(df: pd.DataFrame) -> dict:
+    """
+    支撑位震荡选方向（下跌趋势）
+    条件：下影接上影 + K1阳线 + K1放量 + K2缩量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "down" or base["combo_type"] != "lower_to_upper":
+        return {"signal": False, "name": "支撑位震荡选方向"}
+
+    if base["k1_is_yin"]:
+        return {"signal": False, "name": "支撑位震荡选方向"}
+
+    k1_ok = base["k1_vol_type"] == "increase"
+    k2_ok = base["k2_vol_type"] == "decrease"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "支撑位震荡选方向",
+        "strength": -1,
+        "type": "neutral",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_support_rebound(df: pd.DataFrame) -> dict:
+    """
+    支撑位资金抢反弹（下跌趋势）
+    条件：上影接下影 + K1阳线 + K1放量 + K2放量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "down" or base["combo_type"] != "upper_to_lower":
+        return {"signal": False, "name": "支撑位资金抢反弹"}
+
+    if base["k1_is_yin"]:
+        return {"signal": False, "name": "支撑位资金抢反弹"}
+
+    k1_ok = base["k1_vol_type"] == "increase"
+    k2_ok = base["k2_vol_type"] in ["increase", "huge"]
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "支撑位资金抢反弹",
+        "strength": 1,
+        "type": "bullish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_short_stop(df: pd.DataFrame) -> dict:
+    """
+    短期止跌（下跌趋势）
+    条件：上影接下影 + K1阴线 + K1平/放量 + K2缩量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "down" or base["combo_type"] != "upper_to_lower":
+        return {"signal": False, "name": "短期止跌"}
+
+    if not base["k1_is_yin"]:
+        return {"signal": False, "name": "短期止跌"}
+
+    k1_ok = base["k1_vol_type"] in ["increase", "stable", "moderate"]
+    k2_ok = base["k2_vol_type"] == "decrease"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "短期止跌",
+        "strength": 2,
+        "type": "bullish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_diverge_start(df: pd.DataFrame) -> dict:
+    """
+    开始有分歧（上涨趋势）
+    条件：下影接上影 + K1阴线 + K1放量 + K2放量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "up" or base["combo_type"] != "lower_to_upper":
+        return {"signal": False, "name": "开始有分歧"}
+
+    if not base["k1_is_yin"]:
+        return {"signal": False, "name": "开始有分歧"}
+
+    k1_ok = base["k1_vol_type"] == "increase"
+    k2_ok = base["k2_vol_type"] == "increase"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "开始有分歧",
+        "strength": -1,
+        "type": "bearish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_diverge_strong(df: pd.DataFrame) -> dict:
+    """
+    分歧但强势看新高（上涨趋势）
+    条件：下影接上影 + K1阳线 + K1温和放量(1.0-1.5) + K2缩量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "up" or base["combo_type"] != "lower_to_upper":
+        return {"signal": False, "name": "分歧但强势看新高"}
+
+    if base["k1_is_yin"]:
+        return {"signal": False, "name": "分歧但强势看新高"}
+
+    k1_ok = base["k1_vol_type"] == "moderate"  # 温和放量 1.0-1.5
+    k2_ok = base["k2_vol_type"] == "decrease"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "分歧但强势看新高",
+        "strength": 1,
+        "type": "bullish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_strong_support(df: pd.DataFrame) -> dict:
+    """
+    承接力度大只承接不追高（上涨趋势）
+    条件：上影接下影 + K1阳线 + K1巨量(>1.5倍) + K2放量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "up" or base["combo_type"] != "upper_to_lower":
+        return {"signal": False, "name": "承接力度大只承接不追高"}
+
+    if base["k1_is_yin"]:
+        return {"signal": False, "name": "承接力度大只承接不追高"}
+
+    k1_ok = base["k1_vol_type"] == "huge"  # 巨量 > 1.5倍
+    k2_ok = base["k2_vol_type"] in ["increase", "huge"]
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "承接力度大只承接不追高",
+        "strength": 0,
+        "type": "neutral",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+def check_weak_support(df: pd.DataFrame) -> dict:
+    """
+    承接低可能出现短期顶（上涨趋势）
+    条件：上影接下影 + K1阴线 + K1放量 + K2缩量
+    """
+    base = check_dual_shadow_base(df)
+    if base["trend"] != "up" or base["combo_type"] != "upper_to_lower":
+        return {"signal": False, "name": "承接低可能出现短期顶"}
+
+    if not base["k1_is_yin"]:
+        return {"signal": False, "name": "承接低可能出现短期顶"}
+
+    k1_ok = base["k1_vol_type"] == "increase"
+    k2_ok = base["k2_vol_type"] == "decrease"
+
+    return {
+        "signal": k1_ok and k2_ok,
+        "name": "承接低可能出现短期顶",
+        "strength": -2,
+        "type": "bearish",
+        "volume_match": k1_ok and k2_ok,
+        "details": base,
+    }
+
+
+# ────────────────────────────────────────────
+# 指标 6：通达信策略1（复合信号策略 - 合并版）
+# ────────────────────────────────────────────
+
+def check_tdx_strategy1(df: pd.DataFrame) -> dict:
+    """
+    通达信策略1 - 复合信号检测（合并版）。
+
+    包含多个信号的综合检测：
+    - 游资进场、抄底、精准买点、短买点、奔牛、黑马、波段买点、波段卖点、大黑马
+
+    Returns:
+        {
+            "signal": bool,  # 是否触发任一信号
+            "name": "通达信策略1",
+            "signals": list,  # 触发的具体信号列表
+            "buy_line": float,
+            "sell_line": float,
+            "is_bullish": bool,
+        }
+    """
+    if len(df) < 150:
+        return {"signal": False, "name": "通达信策略1", "signals": []}
+
+    closes = df["close"]
+    volumes = df["volume"]
+    highs = df["high"]
+    lows = df["low"]
+    opens = df["open"]
+
+    # ZIG作为买线，其3日均线作为卖线
+    zig_line = calc_zig(closes, 10.0)
+    buy_line = zig_line
+    sell_line = buy_line.rolling(3).mean()
+    is_bullish = buy_line.iloc[-1] >= sell_line.iloc[-1]
+
+    signals = []
+
+    # 检测各个子信号（复用之前的逻辑）
+    result = check_tdx_strategy1_full(df)
+    if result["has_signal"]:
+        signals = result["signals"]
+
+    return {
+        "signal": len(signals) > 0,
+        "name": "通达信策略1",
+        "signals": signals,
+        "buy_line": round(buy_line.iloc[-1], 2),
+        "sell_line": round(sell_line.iloc[-1], 2),
+        "is_bullish": is_bullish,
+        "strength": sum(s.get("strength", 0) for s in signals),
+    }
+
+
+def check_tdx_strategy1_full(df: pd.DataFrame) -> dict:
+    """通达信策略1完整检测逻辑。"""
+    if len(df) < 150:
+        return {"has_signal": False, "signals": []}
+
+    closes = df["close"]
+    volumes = df["volume"]
+    highs = df["high"]
+    lows = df["low"]
+    opens = df["open"]
+
+    # ZIG(3,10)作为买线，其3日均线作为卖线
+    zig_line = calc_zig(closes, 10.0)
+    buy_line = zig_line
+    sell_line = buy_line.rolling(3).mean()
+    is_bullish = buy_line.iloc[-1] >= sell_line.iloc[-1]
+
+    # 基线：REF(LLV(C,30),1)的2日均线
+    llv30 = calc_llv(closes, 30)
+    baseline = llv30.shift(1).rolling(2).mean()
+
+    # 量能饱和度
+    vol_ma5 = volumes.rolling(5).mean()
+    vol_ma60 = volumes.rolling(60).mean()
+    volume_saturation = (vol_ma5.iloc[-1] / vol_ma60.iloc[-1] * 100) if vol_ma60.iloc[-1] > 0 else 0
+
+    signals = []
+
+    # 1. 游资进场信号
+    try:
+        varf1 = (highs - lows) / closes * 100
+        vol_increase = volumes.iloc[-1] > volumes.iloc[-2]
+        price_increase = closes.iloc[-1] > closes.iloc[-2]
+
+        recent_30 = df.tail(30)
+        signal_count = 0
+        for i in range(len(recent_30) - 1):
+            if recent_30.iloc[i+1]["volume"] > recent_30.iloc[i]["volume"] and \
+               recent_30.iloc[i+1]["close"] > recent_30.iloc[i]["close"]:
+                signal_count += 1
+
+        if vol_increase and price_increase and is_bullish and signal_count <= 1:
+            signals.append({"name": "游资进场", "type": "bullish", "strength": 3, "color": "#ADD8E6"})
+    except Exception:
+        pass
+
+    # 2. 抄底信号
+    try:
+        vars1 = (closes - calc_llv(closes, 9)) / (calc_hhv(closes, 9) - calc_llv(closes, 9)) * 100
+        vars3 = vars1.rolling(3).mean()
+        vars4 = vars1.ewm(span=3).mean()
+        cross_up = vars3.iloc[-1] > vars4.iloc[-1] and vars3.iloc[-2] <= vars4.iloc[-2]
+        under_20 = vars3.iloc[-1] < 20
+
+        if cross_up and under_20 and is_bullish:
+            signals.append({"name": "抄底", "type": "bullish", "strength": 2, "color": "#FF00FF"})
+    except Exception:
+        pass
+
+    # 3. 精准买点
+    try:
+        x1 = calc_hhv(highs, 5) - calc_llv(lows, 5)
+        x2 = (closes - calc_llv(lows, 5)) / x1 * 100
+        x3 = x2.rolling(5).mean()
+        cross_up = x2.iloc[-1] > x3.iloc[-1] and x2.iloc[-2] <= x3.iloc[-2]
+
+        if cross_up and is_bullish:
+            signals.append({"name": "精准买点", "type": "bullish", "strength": 2, "color": "#FFFF00"})
+    except Exception:
+        pass
+
+    # 4. 短买点
+    try:
+        momentum = closes.pct_change() * 100
+        cross_11 = momentum.iloc[-1] > 11 and momentum.iloc[-2] <= 11
+        k1_yin = closes.iloc[-2] < opens.iloc[-2]
+        k2_yang = closes.iloc[-1] > opens.iloc[-1]
+        reversal = k1_yin and k2_yang and closes.iloc[-1] > opens.iloc[-2]
+        avg_vol = volumes.rolling(20).mean().iloc[-1]
+        turnover_ratio = volumes.iloc[-1] / avg_vol if avg_vol > 0 else 0
+
+        if cross_11 and reversal and turnover_ratio > 3 and is_bullish:
+            signals.append({"name": "短买点", "type": "bullish", "strength": 1, "color": "#FF00FF"})
+    except Exception:
+        pass
+
+    # 5. 奔牛信号
+    try:
+        sma_signal = closes.rolling(13).mean()
+        ema_signal = closes.ewm(span=8).mean()
+        cross_up = sma_signal.iloc[-1] > ema_signal.iloc[-1] and sma_signal.iloc[-2] <= ema_signal.iloc[-2]
+
+        if cross_up and is_bullish:
+            signals.append({"name": "奔牛", "type": "bullish", "strength": 2, "color": "#00AAFF"})
+    except Exception:
+        pass
+
+    # 6. 黑马信号
+    try:
+        ema3 = closes.ewm(span=3).mean()
+        ema21 = closes.ewm(span=21).mean()
+        golden_cross = ema3.iloc[-1] > ema21.iloc[-1] and ema3.iloc[-2] <= ema21.iloc[-2]
+
+        last_death = 0
+        for i in range(len(df) - 2, max(0, len(df) - 50), -1):
+            if ema3.iloc[i] < ema21.iloc[i] and ema3.iloc[i-1] >= ema21.iloc[i-1]:
+                last_death = len(df) - i
+                break
+
+        vol_ok = 0.8 < volume_saturation / 100 < 1.5
+
+        if golden_cross and vol_ok and last_death > 15 and is_bullish:
+            signals.append({"name": "黑马", "type": "bullish", "strength": 3, "color": "#FF6600"})
+    except Exception:
+        pass
+
+    # 7. 波段买点
+    try:
+        cross_up = buy_line.iloc[-1] > sell_line.iloc[-1] and buy_line.iloc[-2] <= sell_line.iloc[-2]
+        if cross_up and is_bullish:
+            signals.append({"name": "波段买点", "type": "bullish", "strength": 2, "color": "#FFB6C1"})
+    except Exception:
+        pass
+
+    # 8. 波段卖点
+    try:
+        zig5 = calc_zig(closes, 5.0)
+        down_3 = zig5.iloc[-1] < zig5.iloc[-2] and zig5.iloc[-2] < zig5.iloc[-3] and zig5.iloc[-3] < zig5.iloc[-4]
+        if down_3 and not is_bullish:
+            signals.append({"name": "波段卖点", "type": "bearish", "strength": -2, "color": "#FFFFFF"})
+    except Exception:
+        pass
+
+    # 9. 大黑马信号
+    try:
+        comp_sma = (closes - calc_llv(lows, 55)) / (calc_hhv(highs, 55) - calc_llv(lows, 55)) * 100
+        comp_sma = comp_sma - 50
+        cross_zero = comp_sma.iloc[-1] > 0 and comp_sma.iloc[-2] <= 0
+        ema_cond = closes.ewm(span=13).mean().iloc[-1] < closes.iloc[-1] * 1.4
+
+        if cross_zero and ema_cond and is_bullish:
+            signals.append({"name": "大黑马", "type": "bullish", "strength": 4, "color": "#0000FF"})
+    except Exception:
+        pass
+
+    return {
+        "has_signal": len(signals) > 0,
+        "signals": signals,
+        "buy_line": round(buy_line.iloc[-1], 2),
+        "sell_line": round(sell_line.iloc[-1], 2),
+        "is_bullish": is_bullish,
+        "baseline": round(baseline.iloc[-1], 2) if not pd.isna(baseline.iloc[-1]) else None,
+        "volume_saturation": round(volume_saturation, 1),
+    }
+
+
+# ────────────────────────────────────────────
+# 指标 7：通达信策略2（主图量化策略）
+# ────────────────────────────────────────────
+
+def check_tdx_strategy2(df: pd.DataFrame) -> dict:
+    """
+    通达信策略2 - 主图量化策略。
+
+    核心要素：
+    1. MA5(#F00FF0)、MA10、MA20均线
+    2. 买线=ZIG(3,10)，卖线=MA(买线,3)
+    3. K线颜色填充：空头绿色渐变、多头蓝色渐变
+    4. 基线、量能饱和度、换手率
+    5. 多个信号：游资进场、抄底、精准买、短买点、奔牛、黑马、波段买卖、大黑马
+    6. ZIG图标标记
+
+    Returns:
+        {
+            "signal": bool,
+            "name": "通达信策略2",
+            "signals": list,
+            "ma_values": dict,
+            "buy_line": float,
+            "sell_line": float,
+            "is_bullish": bool,
+            "kline_color": str,  # 当前K线应填充颜色
+            "zig_icons": list,  # ZIG图标标记
+        }
+    """
+    if len(df) < 60:
+        return {"signal": False, "name": "通达信策略2", "signals": []}
+
+    closes = df["close"]
+    volumes = df["volume"]
+    highs = df["high"]
+    lows = df["low"]
+    opens = df["open"]
+
+    # 1. 均线系统
+    ma5 = closes.rolling(5).mean()
+    ma10 = closes.rolling(10).mean()
+    ma20 = closes.rolling(20).mean()
+
+    # 2. 买线=ZIG(3,10)，卖线=MA(买线,3)
+    # ZIG(3,10)表示用收盘价，阈值10%
+    zig_line = calc_zig(closes, 10.0)
+    buy_line = zig_line
+    sell_line = buy_line.rolling(3).mean()
+
+    # 3. K线颜色判断
+    is_bullish = buy_line.iloc[-1] >= sell_line.iloc[-1]
+    kline_color = "blue_gradient" if is_bullish else "green_gradient"
+
+    # 检测买线上穿卖线（特殊颜色）
+    cross_up = buy_line.iloc[-1] > sell_line.iloc[-1] and buy_line.iloc[-2] <= sell_line.iloc[-2]
+    if cross_up:
+        kline_color = "#00AAFF"
+
+    # 4. 基线与量能饱和度
+    llv30 = calc_llv(closes, 30)
+    baseline = llv30.shift(1).rolling(2).mean()
+
+    vol_ma5 = volumes.rolling(5).mean()
+    vol_ma60 = volumes.rolling(60).mean()
+    volume_saturation = (vol_ma5.iloc[-1] / vol_ma60.iloc[-1] * 100) if vol_ma60.iloc[-1] > 0 else 0
+
+    # 换手率估算
+    avg_vol = volumes.rolling(20).mean().iloc[-1]
+    turnover = (volumes.iloc[-1] / avg_vol) if avg_vol > 0 else 0
+
+    signals = []
+
+    # 5. 游资进场信号
+    try:
+        # VARF1 = (H-L)/C*100 振幅
+        varf1 = (highs - lows) / closes * 100
+        # VAR101 = VARF1的2日均线
+        var101 = varf1.rolling(2).mean()
+        # VAR111条件：VARF1 < 前VAR101 且 量增价涨
+        var111_cond = varf1.iloc[-1] < var101.iloc[-2] and \
+                      volumes.iloc[-1] > volumes.iloc[-2] and \
+                      closes.iloc[-1] > closes.iloc[-2]
+
+        # 30周期内唯一检测
+        recent_30 = df.tail(30)
+        unique_check = True
+        for i in range(len(recent_30) - 2):
+            if recent_30.iloc[i+1]["volume"] > recent_30.iloc[i]["volume"] and \
+               recent_30.iloc[i+1]["close"] > recent_30.iloc[i]["close"] and \
+               i != len(recent_30) - 2:
+                unique_check = False
+                break
+
+        if var111_cond and unique_check and is_bullish:
+            signals.append({
+                "name": "游资进场",
+                "type": "bullish",
+                "strength": 3,
+                "color": "#ADD8E6",  # lightblue
+                "position": "baseline_0.97",
+                "text": "游资进场",
+            })
+    except Exception:
+        pass
+
+    # 6. 抄底信号
+    try:
+        # VARS1 = (C-LLV(C,9))/(HHV(C,9)-LLV(C,9))*100
+        vars1 = (closes - calc_llv(closes, 9)) / (calc_hhv(closes, 9) - calc_llv(closes, 9)) * 100
+        # VARS3 = SMA(VARS1,3,1)
+        vars3 = vars1.ewm(span=3).mean()  # 简化EMA代替SMA
+        # VARS4 = SMA(VARS3,3,1)
+        vars4 = vars3.ewm(span=3).mean()
+
+        cross_up = vars3.iloc[-1] > vars4.iloc[-1] and vars3.iloc[-2] <= vars4.iloc[-2]
+        under_20 = vars3.iloc[-1] < 20
+
+        if cross_up and under_20 and is_bullish:
+            signals.append({
+                "name": "抄底",
+                "type": "bullish",
+                "strength": 2,
+                "color": "#FF00FF",  # magenta
+                "position": "baseline_0.94",
+                "text": "抄底",
+            })
+    except Exception:
+        pass
+
+    # 7. 精准买点
+    try:
+        # X1 = HHV(H,5) - LLV(L,5)
+        x1 = calc_hhv(highs, 5) - calc_llv(lows, 5)
+        # X2 = (C-LLV(L,5))/X1*100
+        x2 = (closes - calc_llv(lows, 5)) / x1 * 100
+        # X3 = SMA(X2,5,1)
+        x3 = x2.ewm(span=5).mean()
+
+        cross_up = x2.iloc[-1] > x3.iloc[-1] and x2.iloc[-2] <= x3.iloc[-2]
+
+        if cross_up and is_bullish:
+            signals.append({
+                "name": "精准买",
+                "type": "bullish",
+                "strength": 2,
+                "color": "#FFFF00",  # 黄色
+                "position": "low_0.99",
+                "text": "精准买",
+            })
+    except Exception:
+        pass
+
+    # 8. 短买点
+    try:
+        # 动量线
+        momentum = closes.diff() / closes.shift(1) * 100
+        momentum_ma = momentum.rolling(11).mean()
+        cross_11 = momentum.iloc[-1] > momentum_ma.iloc[-1]
+
+        # S1/S2反转结构
+        s1 = closes.iloc[-2] < opens.iloc[-2]  # 前一日阴线
+        s2 = closes.iloc[-1] > opens.iloc[-1]  # 当日阳线
+        reversal = s1 and s2 and closes.iloc[-1] > opens.iloc[-2]
+
+        if cross_11 and reversal and turnover >= 3 and is_bullish:
+            signals.append({
+                "name": "短买点",
+                "type": "bullish",
+                "strength": 1,
+                "color": "#FF00FF",  # magenta
+                "position": "baseline_0.94",
+                "text": "短买点",
+            })
+    except Exception:
+        pass
+
+    # 9. 奔牛信号
+    try:
+        # 特定平滑值
+        sma_val = closes.rolling(8).mean()
+        ema_val = closes.ewm(span=13).mean()
+        cross = sma_val.iloc[-1] > ema_val.iloc[-1] and sma_val.iloc[-2] <= ema_val.iloc[-2]
+
+        if cross and is_bullish:
+            signals.append({
+                "name": "奔牛",
+                "type": "bullish",
+                "strength": 2,
+                "color": "#00AAFF",
+                "position": "baseline_0.98",
+                "text": "奔牛",
+            })
+    except Exception:
+        pass
+
+    # 10. 黑马信号
+    try:
+        ema3 = closes.ewm(span=3).mean()
+        ema21 = closes.ewm(span=21).mean()
+        golden = ema3.iloc[-1] > ema21.iloc[-1] and ema3.iloc[-2] <= ema21.iloc[-2]
+
+        # 量能适中（80%-150%）
+        vol_ok = 80 < volume_saturation < 150
+
+        # 距上次死叉>15周期
+        last_death_dist = 0
+        for i in range(len(df) - 2, max(0, len(df) - 50), -1):
+            if ema3.iloc[i] < ema21.iloc[i]:
+                last_death_dist = len(df) - i
+                break
+
+        if golden and vol_ok and last_death_dist > 15 and is_bullish:
+            signals.append({
+                "name": "黑马",
+                "type": "bullish",
+                "strength": 3,
+                "color": "#FF6600",
+                "position": "baseline_0.98",
+                "text": "黑马",
+            })
+    except Exception:
+        pass
+
+    # 11. 波段买卖
+    try:
+        # 波段买点：买线上穿卖线
+        wave_buy = buy_line.iloc[-1] > sell_line.iloc[-1] and buy_line.iloc[-2] <= sell_line.iloc[-2]
+        if wave_buy and is_bullish:
+            signals.append({
+                "name": "波段买点",
+                "type": "bullish",
+                "strength": 2,
+                "color": "#FFB6C1",  # lightred
+                "position": "baseline_0.98",
+                "text": "--进场",
+            })
+
+        # 波段卖点：ZIG(3,5)连续三期下降
+        zig5 = calc_zig(closes, 5.0)
+        wave_sell = zig5.iloc[-1] < zig5.iloc[-2] and zig5.iloc[-2] < zig5.iloc[-3] and zig5.iloc[-3] < zig5.iloc[-4]
+        if wave_sell and not is_bullish:
+            signals.append({
+                "name": "波段卖点",
+                "type": "bearish",
+                "strength": -2,
+                "color": "#FFFFFF",
+                "position": "high_1.05",
+                "text": "落袋为安",
+            })
+    except Exception:
+        pass
+
+    # 12. 大黑马信号
+    try:
+        # 复合SMA
+        comp_sma = (closes - calc_llv(lows, 55)) / (calc_hhv(highs, 55) - calc_llv(lows, 55)) * 100
+        comp_sma = comp_sma - 50
+        cross_zero = comp_sma.iloc[-1] > 0 and comp_sma.iloc[-2] <= 0
+
+        # 另一EMA条件<40
+        ema13 = closes.ewm(span=13).mean()
+        ema_cond = ema13.iloc[-1] < closes.iloc[-1] * 1.4  # 简化条件
+
+        if cross_zero and ema_cond and is_bullish:
+            signals.append({
+                "name": "大黑马",
+                "type": "bullish",
+                "strength": 4,
+                "color": "#0000FF",
+                "position": "baseline_0.94",
+                "text": "-大黑马",
+            })
+    except Exception:
+        pass
+
+    # 13. ZIG图标标记
+    zig_icons = []
+    try:
+        # ZIG(3,10)上穿前值
+        zig10 = calc_zig(closes, 10.0)
+        zig_up = zig10.iloc[-1] > zig10.iloc[-2] and zig10.iloc[-2] <= zig10.iloc[-3]
+        zig_down = zig10.iloc[-1] < zig10.iloc[-2] and zig10.iloc[-2] >= zig10.iloc[-3]
+
+        if zig_up:
+            zig_icons.append({
+                "icon": "icon7",
+                "position": "low_0.97",
+                "color": "green",
+            })
+        if zig_down:
+            zig_icons.append({
+                "icon": "icon8",
+                "position": "high_1.04",
+                "color": "red",
+            })
+
+        # ZIG(3,8)上穿前值 -> 绝佳标记
+        zig8 = calc_zig(closes, 8.0)
+        zig8_up = zig8.iloc[-1] > zig8.iloc[-2] and zig8.iloc[-2] <= zig8.iloc[-3]
+        if zig8_up:
+            zig_icons.append({
+                "icon": "star",
+                "text": "★绝佳",
+                "position": "low_0.928",
+                "color": "red",
+            })
+    except Exception:
+        pass
+
+    return {
+        "signal": len(signals) > 0,
+        "name": "通达信策略2",
+        "signals": signals,
+        "ma_values": {
+            "ma5": round(ma5.iloc[-1], 2) if not pd.isna(ma5.iloc[-1]) else None,
+            "ma10": round(ma10.iloc[-1], 2) if not pd.isna(ma10.iloc[-1]) else None,
+            "ma20": round(ma20.iloc[-1], 2) if not pd.isna(ma20.iloc[-1]) else None,
+        },
+        "buy_line": round(buy_line.iloc[-1], 2),
+        "sell_line": round(sell_line.iloc[-1], 2),
+        "is_bullish": is_bullish,
+        "kline_color": kline_color,
+        "baseline": round(baseline.iloc[-1], 2) if not pd.isna(baseline.iloc[-1]) else None,
+        "volume_saturation": round(volume_saturation, 1),
+        "turnover": round(turnover, 2),
+        "zig_icons": zig_icons,
+        "strength": sum(s.get("strength", 0) for s in signals),
+    }
+
+
+# ────────────────────────────────────────────
+# 双K线影线策略字典（用于综合检测）
+# ────────────────────────────────────────────
+DUAL_SHADOW_STRATEGIES = {
+    "continue_down": {"func": check_continue_down, "name": "中继下跌", "group": "下跌趋势"},
+    "support_range": {"func": check_support_range, "name": "支撑位震荡选方向", "group": "下跌趋势"},
+    "support_rebound": {"func": check_support_rebound, "name": "支撑位资金抢反弹", "group": "下跌趋势"},
+    "short_stop": {"func": check_short_stop, "name": "短期止跌", "group": "下跌趋势"},
+    "diverge_start": {"func": check_diverge_start, "name": "开始有分歧", "group": "上涨趋势"},
+    "diverge_strong": {"func": check_diverge_strong, "name": "分歧但强势看新高", "group": "上涨趋势"},
+    "strong_support": {"func": check_strong_support, "name": "承接力度大只承接不追高", "group": "上涨趋势"},
+    "weak_support": {"func": check_weak_support, "name": "承接低可能出现短期顶", "group": "上涨趋势"},
+}
+
+
+def check_trend_shadow_strategy(df: pd.DataFrame) -> dict:
+    """
+    综合检测所有双K线影线策略。
+    返回匹配的第一个信号（按优先级：bullish > neutral > bearish）。
+    """
+    results = []
+    for key, info in DUAL_SHADOW_STRATEGIES.items():
+        result = info["func"](df)
+        if result["signal"]:
+            results.append({
+                "strategy_key": key,
+                "strategy_name": result["name"],
+                "signal_type": result["type"],
+                "strength": result["strength"],
+                "volume_match": result["volume_match"],
+            })
+
+    if not results:
+        return {
+            "has_signal": False,
+            "signals": [],
+            "is_strong_signal": False,
+            "trend": "unknown",
+            "signal_strength": 0,
+        }
+
+    # 按 strength 排序（优先 bullish）
+    results.sort(key=lambda x: -x["strength"])
+
+    # 提取趋势信息
+    primary = results[0]
+    trend = "上涨" if primary["signal_type"] == "bullish" else "下跌" if primary["signal_type"] == "bearish" else "震荡"
+
+    return {
+        "has_signal": True,
+        "is_strong_signal": primary["volume_match"],
+        "signals": results,
+        "primary_signal": primary,
+        "trend": trend,
+        "signal_strength": primary["strength"],
+    }
+
+
+# ────────────────────────────────────────────
 # 主策略管道：组装所有指标
 # ────────────────────────────────────────────
 def run_strategy_pipeline(df: pd.DataFrame) -> pd.DataFrame:
@@ -394,6 +1404,9 @@ def generate_summary(df: pd.DataFrame) -> dict:
     # 红色揉搓线策略
     rubbing = check_rubbing_strategy(df)
 
+    # 趋势影线组合策略
+    trend_shadow = check_trend_shadow_strategy(df)
+
     # 综合打分（简单规则）
     score = 0
     if ma_bullish:
@@ -404,11 +1417,15 @@ def generate_summary(df: pd.DataFrame) -> dict:
         score += 20
     if rubbing["buy_signal"]:
         score += 25
+    if trend_shadow["is_strong_signal"]:
+        # 根据信号强度调整加分
+        score += 20 + trend_shadow.get("signal_strength", 0) * 5
 
     return {
         "stock_code": df.attrs.get("symbol", ""),
         "latest_date": str(df.iloc[-1]["date"].date()),
         "latest_close": round(df.iloc[-1]["close"], 2),
+        "trend": trend_shadow["trend"],
         "ma_bullish_alignment": bool(ma_bullish),
         "ma_statuses": ma_statuses[-20:],  # 最近 20 条
         "macd": {
@@ -429,8 +1446,9 @@ def generate_summary(df: pd.DataFrame) -> dict:
             "close_near_mid_pct": round(abs(df.iloc[-1]["close"] - df.iloc[-1]["boll_mid"]) / df.iloc[-1]["boll_mid"] * 100, 3) if not pd.isna(df.iloc[-1].get("boll_mid")) and df.iloc[-1]["boll_mid"] != 0 else None,
         },
         "rubbing_strategy": rubbing,
+        "trend_shadow_strategy": trend_shadow,
         "strategy_score": score,
-        "signal_summary": _build_signal_summary(ma_bullish, monthly_golden, weekly_death, daily_death, arb, rubbing),
+        "signal_summary": _build_signal_summary(ma_bullish, monthly_golden, weekly_death, daily_death, arb, rubbing, trend_shadow),
     }
 
 
@@ -441,6 +1459,7 @@ def _build_signal_summary(
     daily_death: bool,
     arb: dict,
     rubbing: dict | None = None,
+    trend_shadow: dict | None = None,
 ) -> list[str]:
     """生成可读信号摘要列表。"""
     signals = []
@@ -488,5 +1507,17 @@ def _build_signal_summary(
                     parts.append("K-2无下影")
                 details.append("形态不符(" + ",".join(parts) + ")")
             signals.append("❌ 揉搓线未触发（" + " / ".join(details) + "）")
+
+    # 趋势影线组合策略信号
+    if trend_shadow:
+        ts = trend_shadow
+        if ts["has_signal"]:
+            if ts["is_strong_signal"]:
+                signals.append(f"📊 趋势影线组合【{ts['signal_name']}】（{ts['action']}）")
+            else:
+                signals.append(f"📊 趋势影线组合【{ts['signal_name']}】量能未匹配（{ts['volume_info'].get('pattern', 'unknown')}）")
+        else:
+            trend_desc = {"up": "上涨", "down": "下跌", "sideways": "震荡"}
+            signals.append(f"ℹ️ {trend_desc.get(ts['trend'], '未知')}趋势，影线组合形态不满足")
 
     return signals
